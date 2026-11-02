@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>ESP32 Radar - Corrected Logic</title>
+    <style>
+        body { background-color: #0d1117; color: #00ff66; font-family: monospace; text-align: center; margin: 0; padding: 20px; }
+        canvas { background-color: #000; border: 2px solid #00ff66; box-shadow: 0 0 20px rgba(0,255,102,0.3); margin-top: 20px; }
+        button { background-color: #00ff66; color: #000; border: none; padding: 10px 20px; font-size: 16px; font-weight: bold; cursor: pointer; border-radius: 5px; }
+        button:hover { background-color: #00cc52; }
+        #statusDisplay { font-size: 18px; font-weight: bold; margin-top: 10px; }
+    </style>
+</head>
+<body>
+
+    <h1>ESP32 Web Radar</h1>
+    <button id="connectBtn">Connect ESP32</button>
+    <p id="status">Status: Disconnected</p>
+    <div id="statusDisplay" style="color: #00ff66;">Status: CLEAR (Green)</div>
+    
+    <br>
+    <canvas id="radarCanvas" width="600" height="600"></canvas>
+
+<script>
+    const connectBtn = document.getElementById('connectBtn');
+    const statusText = document.getElementById('status');
+    const statusDisplay = document.getElementById('statusDisplay');
+    const canvas = document.getElementById('radarCanvas');
+    const ctx = canvas.getContext('2d');
+
+    let currentAngle = 0;
+    let currentDistance = 0;
+    let targets = [];
+
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
+
+    function drawRadarBackground() {
+        ctx.fillStyle = "rgba(0, 0, 0, 0.2)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // Draw Rings
+        ctx.strokeStyle = "#004422";
+        ctx.lineWidth = 1;
+        [100, 200, 280].forEach(r => {
+            ctx.beginPath();
+            ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+            ctx.stroke();
+        });
+
+        // Draw Crosslines
+        ctx.beginPath();
+        ctx.moveTo(cx - 300, cy); ctx.lineTo(cx + 300, cy);
+        ctx.moveTo(cx, cy - 300); ctx.lineTo(cx, cy + 300);
+        ctx.stroke();
+
+        // Draw Sweep Line (Green)
+        let rad = (currentAngle - 90) * (Math.PI / 180);
+        ctx.strokeStyle = "#00ff66";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(cx + Math.cos(rad) * 280, cy + Math.sin(rad) * 280);
+        ctx.stroke();
+
+        // Draw RED Target Dots for Detections
+        let now = Date.now();
+        targets = targets.filter(t => now - t.time < 3000);
+        targets.forEach(t => {
+            let age = (now - t.time) / 3000;
+            ctx.fillStyle = `rgba(255, 0, 0, ${1 - age})`; // Bright Red
+            ctx.beginPath();
+            ctx.arc(t.x, t.y, 6, 0, 2 * Math.PI);
+            ctx.fill();
+        });
+    }
+
+    function renderLoop() {
+        drawRadarBackground();
+        requestAnimationFrame(renderLoop);
+    }
+    renderLoop();
+
+    // Web Serial Connection
+    connectBtn.addEventListener('click', async () => {
+        try {
+            const port = await navigator.serial.requestPort();
+            await port.open({ baudRate: 115200 });
+            statusText.innerText = "Status: Connected";
+            connectBtn.style.display = "none";
+
+            const textDecoder = new TextDecoderStream();
+            const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
+            const reader = textDecoder.readable.getReader();
+
+            let buffer = "";
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                buffer += value;
+                let lines = buffer.split("\n");
+                buffer = lines.pop();
+
+                for (let line of lines) {
+                    line = line.trim();
+                    if (line.includes(',')) {
+                        let parts = line.split(',');
+                        currentAngle = parseInt(parts[0]);
+                        currentDistance = parseInt(parts[1]);
+
+                        // CORRECTED LOGIC: IR sensor value drops when an object is close (LED turns ON)
+                        if (currentDistance < 2000) { 
+                            statusDisplay.innerText = "STATUS: OBJECT DETECTED (RED)";
+                            statusDisplay.style.color = "#ff0000";
+
+                            // Map distance (lower raw value = closer object)
+                            let mappedDist = Math.min(Math.max((2000 - currentDistance) / 7, 20), 280);
+                            let rad = (currentAngle - 90) * (Math.PI / 180);
+                            targets.push({
+                                x: cx + Math.cos(rad) * mappedDist,
+                                y: cy + Math.sin(rad) * mappedDist,
+                                time: Date.now()
+                            });
+                        } else {
+                            statusDisplay.innerText = "STATUS: CLEAR (Green)";
+                            statusDisplay.style.color = "#00ff66";
+                        }
+                    }
+                }
+            }
+        } catch (error) {
+            statusText.innerText = "Status: Error - " + error;
+                        }
+    });
+</script>
+
+</body>
+</html>
